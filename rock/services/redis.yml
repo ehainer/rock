@@ -1,0 +1,9 @@
+dependency_of:
+  - rails
+services:
+  redis:
+    image: redis:$REDIS_VERSION
+    restart: always
+    command: redis-server --appendonly yes
+    ports:
+      - 6379:6379
