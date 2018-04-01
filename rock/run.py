@@ -4,10 +4,12 @@ from dotenv import load_dotenv, dotenv_values
 from machine import Machine
 
 import io
+import re
 import curses
 import os
 import sys
 import time
+import copy
 #import subprocess
 import asyncio
 import codecs
@@ -16,6 +18,18 @@ max_y = 0
 y = 0
 log_h = 0
 loop = asyncio.get_event_loop()
+colors = {}
+current_color = 1
+a = 0
+
+ESCAPE_SEQUENCE_RE = re.compile(r'''
+  ( \\U........      # 8-digit hex escapes
+  | \\u....          # 4-digit hex escapes
+  | \\x..            # 2-digit hex escapes
+  | \\[0-7]{1,3}     # Octal escapes
+  | \\N\{[^}]+\}     # Unicode characters by name
+  | \\[\\'"abfnrtv]  # Single-character escapes
+  )''', re.UNICODE | re.VERBOSE)
 
 #sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
 
@@ -97,32 +111,62 @@ class Run:
     curses.curs_set(1)
     curses.endwin()
 
-  def write_line(self, curses, stdscr, log_window, log_pad, line):
+  async def write_line(self, curses, stdscr, log_window, log_pad, components):
     global y
     global max_y
     global log_h
-    log_pad.resize(max_y+line.count('\n'), curses.COLS)
-    log_pad.addstr(r'%s' % line)
-    y     += line.count('\n')
-    max_y += line.count('\n')
-    stdscr.refresh()
-    log_window.refresh()
-    log_pad.refresh(y-log_h, 0, 2, 0, curses.LINES-2, curses.COLS)
+    for i in range(0, len(components)):
+      log_pad.resize(max_y+components[i]['word'].count('\n'), curses.COLS)
+      log_pad.addstr(str(components[i]['color']) + ' ::: ' + components[i]['word'], curses.color_pair(int(components[i]['color'])))
+      y     += components[i]['word'].count('\n')
+      max_y += components[i]['word'].count('\n')
+      stdscr.refresh()
+      log_window.refresh()
+      log_pad.refresh(y-log_h, 0, 2, 0, curses.LINES-2, curses.COLS)
 
   async def read_stream(self, stream, curses, stdscr, log_window, log_pad):
+    global a
+    global ESCAPE_SEQUENCE_RE
+    global colors
+    global current_color
     while True:
       line = await stream.readline()
       if line:
-        line = str(line, 'utf-8')
-        ansi_foreground = curses.tigetstr('setaf')
-        if(ansi_foreground):
-          line = curses.tparm(ansi_foreground, 1)
-        self.write_line(curses, stdscr, log_window, log_pad, line)
+        a += 1
+        line = self.decode_escapes(str(line, 'utf-8'))
+
+        ansi_escape = re.compile(r'\x9B|\x1B\[([0-9]*)[ -\/]*[@-~]')
+        color_escape = re.compile(r'(___[0-9]+___)')
+        color_match = re.compile(r'___([0-9]+)___')
+        line = ansi_escape.sub(r'___\1___', line)
+        parts = color_escape.split(line)
+        components = []
+
+        for i in range(0, len(parts)):
+          color = '0'
+          match = color_escape.match(parts[i])
+          if match:
+            if not match.group(1) in colors:
+              colors[match.group(1)] = current_color
+              color = str(current_color)
+              current_color += 1
+            components = components[:]
+            components.append({ 'word': parts[i+1], 'color': color })
+          else:
+            components = components[:]
+            components.append({ 'word': parts[i], 'color': color })
+
+        if a >= 20:
+          self.restoreScreen()
+          print(colors)
+          print(current_color)
+          print(components)
+          exit(1)
+        await self.write_line(curses, stdscr, log_window, log_pad, components)
       else:
         break
 
   async def run_stream(self, cmd, curses, stdscr, log_window, log_pad):
-    # ^[[33mpostgres_1  |^[[0m
     process = await asyncio.create_subprocess_shell(cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
 
     await asyncio.wait([
@@ -158,3 +202,9 @@ class Run:
   def load_file(self, path):
     with open(path, 'r') as file:
       return file.read()
+
+  def decode_escapes(self, s):
+    def decode_match(match):
+      return codecs.decode(match.group(0), 'unicode-escape')
+
+    return ESCAPE_SEQUENCE_RE.sub(decode_match, s)
