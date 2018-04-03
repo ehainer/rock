@@ -1,20 +1,12 @@
-#!/usr/bin/env python
-
-from __future__ import print_function
-from curses import wrapper
-from subprocess import Popen, PIPE
-from dotenv import load_dotenv
+#!/usr/bin/env python3.5
 
 import os
 import sys
 import argparse
-import curses
-import subprocess
-import docker
-from rock.create import Create
 from rock.add import Add
-from rock.clean import Clean
 from rock.run import Run
+from rock.clean import Clean
+from rock.create import Create
 from rock.execute import Execute
 from rock.install import Install
 
@@ -66,9 +58,16 @@ class Rock:
       description='Run the current docker project',
       usage='''rock run'''
     )
-    parser.add_argument('-d', '--detach', help='Run containers in the background')
     args = parser.parse_args(sys.argv[2:])
-    Run(args)
+    Run()
+
+  def install(self):
+    parser = argparse.ArgumentParser(
+      description='Install docker and related docker dependencies',
+      usage='''rock install'''
+    )
+    args = parser.parse_args(sys.argv[2:])
+    Install()
 
 #def clean():
 #  name = getenv('COMPOSE_PROJECT_NAME')

@@ -4,7 +4,7 @@ import asyncio
 import codecs
 import threading
 
-fp = open('log.log', 'w+')
+import time
 
 ESCAPE_SEQUENCE_RE = re.compile(r'''
   ( \\U........      # 8-digit hex escapes
@@ -17,9 +17,8 @@ ESCAPE_SEQUENCE_RE = re.compile(r'''
 
 COMMANDS = [
   [re.compile(r'\x1B\[([0-9]+)A'), '[UP:\g<1>]'],
+  [re.compile(r'\x1B\[([0-9]+)B'), '[DOWN:\g<1>]'],
   [re.compile(r'\x1B\[2K'), '[DELETE]'],
-  [re.compile(r'\x1B\[1B'), '[ESCAPE]'],
-  [re.compile(r'\x1B\[2B'), ''],
   [re.compile(r'\r'), '']
 ]
 
@@ -30,42 +29,56 @@ COMMAND = re.compile(r'\[([A-Z]+):?([0-9]+)?\]')
 class Terminal:
   def __init__(self):
     self.current_y = 0
-    self.max_y = 1
+    self.max_y = 0
     self.output_h = 0
+    self.line = 0
+    self.lines = []
+    self.listener = threading.Thread(target=self.listen)
 
   def __del__(self):
     self.stop()
 
-  def start(self, heading=None):
+  def start(self):
     self.screen = curses.initscr()
     self.setup()
-    if heading:
-      self.header(heading)
+    self.listener.start()
 
   def stop(self):
+    self.listener.join()
+    self.listener.stop()
     curses.echo()
     curses.nocbreak()
     curses.curs_set(1)
     curses.endwin()
 
-  async def listen(self):
+  def listen(self):
     while True:
       c = self.screen.getch()
 
       if c == curses.KEY_UP:
         if self.current_y > 0: self.current_y -= 1
-        self.refresh()
+        if self.current_y < 0: self.current_y = 0
+        self.refresh(False)
       elif c == curses.KEY_DOWN:
         if self.current_y < self.max_y-self.output_h: self.current_y += 1
-        self.refresh()
+        if self.current_y > self.max_y-self.output_h: self.current_y = self.max_y-self.output_h
+        self.refresh(False)
+      elif c == curses.KEY_PPAGE:
+        if self.current_y > 0: self.current_y -= self.output_h
+        if self.current_y < 0: self.current_y = 0
+        self.refresh(False)
+      elif c == curses.KEY_NPAGE:
+        if self.current_y < self.max_y-self.output_h: self.current_y += self.output_h
+        if self.current_y > self.max_y-self.output_h: self.current_y = self.max_y-self.output_h
+        self.refresh(False)
       elif c == ord('q') or c == ord('Q') or c == KeyboardInterrupt:
         break
-      await asyncio.sleep(0.01)
+      time.sleep(0.01)
     
-    self.stop()
+    raise KeyboardInterrupt
 
   def setup(self):
-    curses.curs_set(1)
+    curses.curs_set(0)
     curses.noecho()
     curses.cbreak()
 
@@ -83,12 +96,9 @@ class Terminal:
 
     self.colors = { '___0___': 0 }
     self.current_color = 1
-    self.output_h = curses.LINES-3
-    self.current_y = -self.output_h+1
-    self.output_w = curses.newwin(curses.LINES-2, curses.COLS, 1, 0)
-    self.output_p = curses.newpad(curses.LINES-4, curses.COLS-2)
-    self.output_w.box()
-    self.output_p.scrollok(True)
+    self.output_h = curses.LINES-2
+    self.output_w = curses.newwin(curses.LINES-1, curses.COLS, 1, 0)
+    self.output_p = curses.newpad(curses.LINES-2, curses.COLS)
     self.output_p.idlok(1)
     self.refresh()
 
@@ -97,10 +107,8 @@ class Terminal:
     self.screen.chgat(-1, curses.A_REVERSE)
     self.refresh()
 
-  def write(self, text, color=0):
+  def write(self, text, fcolor=None):
     actions = list(filter(None, re.split(ACTION, self.decode(text))))
-
-    line_break = True
 
     for action in actions:
       match = COMMAND.match(action)
@@ -111,58 +119,48 @@ class Terminal:
           getattr(self, match.group(1).lower())()
       else:
         components = self.color(action)
-        for component in components:
-          #if not component['text'].endswith('\n'):
-          #  component['text'] = '%s\n' % component['text']
-          fp.write(component['text'])
+        for text, color in components:
+          # Allow overriding of color if any found in ANSI codes
+          if fcolor is not None: color = fcolor
 
-          self.output_p.addstr(component['text'], curses.color_pair(component['color']))
-          self.current_y  += 1
-          self.max_y      += 1
-          self.refresh()
+          # Add the lines to the list, increment current "line" by 1
+          self.lines.insert(self.line, (text, color))
+          self.line += 1
 
-  def refresh(self):
-    self.output_p.resize(self.max_y+1, curses.COLS-2)
-    self.screen.refresh()
-    self.output_w.refresh()
-    #self.output_p.refresh(self.current_y-1, 0, 2, 0, curses.LINES-2, curses.COLS)
-    self.output_p.refresh(self.current_y, 0, 2, 1, self.output_h, curses.COLS-2)
+          # If at the bottom of the window, keep scrolling with any new output
+          if self.current_y == self.max_y-self.output_h: self.current_y += 1
+
+    self.refresh()
+
+  def refresh(self, redraw=True):
+    if redraw:
+      self.output_p.clear()
+      self.max_y = 0
+      for text, color in self.lines:
+        if text:
+          self.max_y += text.count('\n')
+          self.output_p.resize(self.max_y+1, curses.COLS)
+          try:
+            self.output_p.addstr(text, curses.color_pair(color))
+          except:
+            pass
+
+    self.screen.noutrefresh()
+    self.output_w.noutrefresh()
+    self.output_p.noutrefresh(self.current_y, 0, 1, 0, self.output_h, curses.COLS)
+    curses.doupdate()
 
   def delete(self):
-    fp.write('Deleted line\n')
-    self.origin()
-    self.output_p.clrtoeol()
-    self.refresh()
+    self.lines[self.line] = ('\n', 0)
 
   def escape(self):
-    y, x = self.output_p.getyx()
-    while True:
-      try:
-        y += 1
-        self.output_p.move(y, 0)
-        fp.write('Escaped down\n')
-      except:
-        break
-    self.refresh()
-
-  def origin(self):
-    y, x = self.output_p.getyx()
-    self.output_p.move(y, 0)
-    self.refresh()
+    self.line = len(self.lines)
 
   def up(self, lines):
-    y, x = self.output_p.getyx()
-    for i in range(y, y-int(lines) if y-int(lines) >= 0 else 0, -1):
-      fp.write('Moved up\n')
-      self.output_p.move(i, x)
-    self.refresh()
+    self.line -= int(lines)
 
-  def down(self):
-    self.max_y += 1
-    self.output_p.resize(self.max_y, curses.COLS)
-    y, x = self.output_p.getyx()
-    self.output_p.move(y+1, x)
-    self.refresh()
+  def down(self, lines):
+    self.line += int(lines)
 
   def color(self, text):
     text = self.decode(text)
@@ -171,7 +169,7 @@ class Terminal:
     color_match = re.compile(r'___([0-9]+)___')
     text = ansi_escape.sub(r'___\1___', text)
     parts = color_escape.split(text)
-    components = [{ 'text': parts[0], 'color': 0 }]
+    components = [(parts[0], 0)]
 
     for i in range(1, len(parts), 2):
       match = color_escape.match(parts[i])
@@ -183,10 +181,10 @@ class Terminal:
           if self.current_color < 6:
             self.current_color += 1
 
-        components.append({ 'text': parts[i+1], 'color': self.colors[match.group(1)] })
+        components.append((parts[i+1], self.colors[match.group(1)]))
         i += 1
       else:
-        components.append({ 'text': parts[i], 'color': 0 })
+        components.append((parts[i], 0))
 
     return components
 
