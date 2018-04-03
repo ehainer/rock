@@ -1,210 +1,117 @@
-from __future__ import print_function
-
-from dotenv import load_dotenv, dotenv_values
-from machine import Machine
+from rock.lib.terminal import Terminal
+from rock.lib.machine import Machine
 
 import io
-import re
-import curses
 import os
 import sys
+import curses
 import time
-import copy
-#import subprocess
 import asyncio
+import threading
+import signal
 import codecs
 
-max_y = 0
-y = 0
-log_h = 0
-loop = asyncio.get_event_loop()
-colors = {}
-current_color = 1
-a = 0
-
-ESCAPE_SEQUENCE_RE = re.compile(r'''
-  ( \\U........      # 8-digit hex escapes
-  | \\u....          # 4-digit hex escapes
-  | \\x..            # 2-digit hex escapes
-  | \\[0-7]{1,3}     # Octal escapes
-  | \\N\{[^}]+\}     # Unicode characters by name
-  | \\[\\'"abfnrtv]  # Single-character escapes
-  )''', re.UNICODE | re.VERBOSE)
-
-#sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
+import re
 
 class Run:
   def __init__(self, arg_input):
     global args
-    global y
-    global max_y
-    global log_h
-    global loop
     args = arg_input
-    self.start()
 
-    stdscr = curses.initscr()
+    self.process = None
+    self.machine = Machine()
+    self.terminal = Terminal()
+    self.terminal.start('Running %s @ %s' % (self.machine.project(), self.machine.ip()))
 
-    buff = io.StringIO()
-    window_y = 2
-    window_b = curses.LINES-1
-    window_h = curses.LINES-window_y
-    current_y = 0
+    #threading.Thread(target=self.terminal.start, args=('Running %s @ %s' % (self.machine.project(), self.machine.ip()),)).start()
 
-    stdscr.keypad(True)
+    # self.start()
 
-    curses.noecho()
-    curses.cbreak()
-    curses.curs_set(0)
+    self.loop = asyncio.get_event_loop()
+    #try:
+      #self.loop.run_until_complete(self.start())
+      #self.loop.run_until_complete(self.configure())
+      #self.loop.run_until_complete(self.run())
 
-    if curses.has_colors():
-      curses.start_color()
+    self.loop.run_until_complete(self.start_all())
+    #except (Exception, KeyboardInterrupt):
+      #if self.process:
+      #  self.process.send_signal(signal.SIGINT)
+      #self.terminal.stop()
+    #self.loop.run_until_complete(self.write_stuff())
+    time.sleep(5)
+    #self.loop.close()
 
-    curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
-    curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-    curses.init_pair(3, curses.COLOR_CYAN, curses.COLOR_BLACK)
+  async def start_all(self):
+    await asyncio.wait([
+      self.run(),
+      self.terminal.listen()
+    ])
 
-    stdscr.addstr(0, 0, ' Running @ ' + Machine().ip(self.machine_name()), curses.A_REVERSE)
-    stdscr.chgat(-1, curses.A_REVERSE)
+  async def run(self):
+    self.process = await asyncio.create_subprocess_shell('docker-compose up', stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
 
-    log_window = curses.newwin(curses.LINES-2, curses.COLS, 2, 0)
+    await asyncio.wait([
+        self.read_stream(self.process.stdout)
+    ])
+    return await self.process.wait()
 
-    log_pad = curses.newpad(curses.LINES-2, curses.COLS)
-    log_pad.scrollok(True)
-    log_pad.idlok(1)
+  async def write_stuff(self):
+    #for i in range(0, 100):
+    #  self.terminal.write('\nHello World %s' % i, 2)
 
-    log_h = curses.LINES-3
-
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(self.run_stream(
-      'docker-compose up',
-      curses,
-      stdscr,
-      log_window,
-      log_pad
-    ))
-    loop.close()
-
-    while True:
-      c = stdscr.getch()
-
-      if c == curses.KEY_UP:
-        if y > log_h: y -= 1
-        log_pad.refresh(y-log_h, 0, 2, 0, curses.LINES-2, curses.COLS)
-      elif c == curses.KEY_DOWN:
-        if y < max_y: y += 1
-        log_pad.refresh(y-log_h, 0, 2, 0, curses.LINES-2, curses.COLS)
-
-      if c == ord('q') or c == ord('Q'):
-        break
+    #await asyncio.sleep(5)
+    for i in range(1, 81):
+      self.terminal.write('Line %s\n' % i, 2)
+      await asyncio.sleep(0.01)
+    #await asyncio.sleep(5)
+    #self.terminal.up(2)
+    #self.terminal.delete()
+    #await asyncio.sleep(1)
+    #self.terminal.write(b'\x1b[2A\x1b[2K\rStarting landwise_redis_1    ... done\r\x1b[1A\x1b[2K\rStarting landwise_postgres_1 ... done\r\x1b[1BStarting landwise_rails_1    ... \r\n')
+    #await asyncio.sleep(1)
+    #self.terminal.write(b'\x1b[1A\x1b[2K\rStarting landwise_rails_1    ... done\r\x1b[1BAttaching to landwise_redis_1, landwise_postgres_1, landwise_rails_1\n')
+    #await asyncio.sleep(1)
     
-    buff.close()
-    self.restoreScreen()
+    #self.terminal.write('Starting landwise_redis_1 ... done\n')
+    #self.terminal.write(b'\x1b[2A\x1b[2K\rStarting landwise_redis_1    ... \x1b[32mdone\x1b[0m\r\x1b[2B\x1b[1A\x1b[2K\rStarting landwise_postgres_1 ... \x1b[32mdone\x1b[0m\r\x1b[1BStarting landwise_rails_1    ... \r\n')
 
-  #def __del__(self):
-  #  print('\n')
-  #  self.restoreScreen()
-
-  def restoreScreen(self):
-    curses.echo()
-    curses.nocbreak()
-    curses.curs_set(1)
-    curses.endwin()
-
-  async def write_line(self, curses, stdscr, log_window, log_pad, components):
-    global y
-    global max_y
-    global log_h
-    for i in range(0, len(components)):
-      log_pad.resize(max_y+components[i]['word'].count('\n'), curses.COLS)
-      log_pad.addstr(str(components[i]['color']) + ' ::: ' + components[i]['word'], curses.color_pair(int(components[i]['color'])))
-      y     += components[i]['word'].count('\n')
-      max_y += components[i]['word'].count('\n')
-      stdscr.refresh()
-      log_window.refresh()
-      log_pad.refresh(y-log_h, 0, 2, 0, curses.LINES-2, curses.COLS)
-
-  async def read_stream(self, stream, curses, stdscr, log_window, log_pad):
-    global a
-    global ESCAPE_SEQUENCE_RE
-    global colors
-    global current_color
+  async def read_stream(self, stream):
     while True:
       line = await stream.readline()
       if line:
-        a += 1
-        line = self.decode_escapes(str(line, 'utf-8'))
-
-        ansi_escape = re.compile(r'\x9B|\x1B\[([0-9]*)[ -\/]*[@-~]')
-        color_escape = re.compile(r'(___[0-9]+___)')
-        color_match = re.compile(r'___([0-9]+)___')
-        line = ansi_escape.sub(r'___\1___', line)
-        parts = color_escape.split(line)
-        components = []
-
-        for i in range(0, len(parts)):
-          color = '0'
-          match = color_escape.match(parts[i])
-          if match:
-            if not match.group(1) in colors:
-              colors[match.group(1)] = current_color
-              color = str(current_color)
-              current_color += 1
-            components = components[:]
-            components.append({ 'word': parts[i+1], 'color': color })
-          else:
-            components = components[:]
-            components.append({ 'word': parts[i], 'color': color })
-
-        if a >= 20:
-          self.restoreScreen()
-          print(colors)
-          print(current_color)
-          print(components)
-          exit(1)
-        await self.write_line(curses, stdscr, log_window, log_pad, components)
+        #print('%s' % line)
+        self.terminal.write(line)
       else:
         break
 
-  async def run_stream(self, cmd, curses, stdscr, log_window, log_pad):
-    process = await asyncio.create_subprocess_shell(cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-
-    await asyncio.wait([
-        self.read_stream(process.stdout, curses, stdscr, log_window, log_pad)
-    ])
-    return await process.wait()
-
-  def running(self):
-    return Machine().status(self.machine_name())
-
-  def stop(self):
-    return Machine().stop(self.machine_name())
-
-  def start(self):
-    if not self.running():
-      print('Starting Machine "%(name)s" ... ' % { 'name': self.machine_name() }, end='')
-      result = Machine().start(self.machine_name())
+  async def start(self):
+    if not self.machine.running():
+      self.terminal.write('\nStarting machine "%s" ... ' % self.machine.name())
+      result = self.machine.start()
       if result:
-        print('OK')
+        self.terminal.write('OK', 5)
+        return True
       else:
-        print('Failed')
+        self.terminal.write('Failed', 6)
+        return False
     else:
-      print('Machine "%(name)s" already started ... OK' % { 'name': self.machine_name() })
+      self.terminal.write('\nMachine "%s" already started ... ' % self.machine.name())
+      self.terminal.write('OK', 5)
       return True
 
-  def machine_name(self):
-    env = io.StringIO()
-    env.write(self.load_file('.env'))
-    env.seek(0)
-    parsed = dotenv_values(stream=env)
-    return parsed['DOCKER_MACHINE']
+  async def configure(self):
+    for k, v in self.machine.config():
+      self.terminal.write('\nSet env ')
+      self.terminal.write(k, 4)
+      self.terminal.write(' ... %s' % v)
 
-  def load_file(self, path):
-    with open(path, 'r') as file:
-      return file.read()
-
-  def decode_escapes(self, s):
+  def decode(self, text):
     def decode_match(match):
       return codecs.decode(match.group(0), 'unicode-escape')
-
-    return ESCAPE_SEQUENCE_RE.sub(decode_match, s)
+    try:
+      for cmd in COMMANDS:
+        text = cmd[0].sub(cmd[1], text)
+      return ESCAPE_SEQUENCE_RE.sub(decode_match, str(text, 'utf-8'))
+    except:
+      return str(text)
