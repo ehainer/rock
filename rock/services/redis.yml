@@ -1,5 +1,8 @@
 dependency_of:
   - rails
+version:
+  ask: true
+  default: 4.0.8
 services:
   redis:
     image: redis:$REDIS_VERSION

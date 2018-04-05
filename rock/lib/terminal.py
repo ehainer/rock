@@ -27,32 +27,33 @@ ACTION = re.compile(r'(\[[A-Z]+(?::[0-9]+)?\])')
 COMMAND = re.compile(r'\[([A-Z]+):?([0-9]+)?\]')
 
 class Terminal:
-  def __init__(self):
+  def __init__(self, stdscr):
+    self.screen = stdscr#curses.initscr()
     self.current_y = 0
-    self.max_y = 0
+    self.max_y = 1
     self.output_h = 0
     self.line = 0
     self.lines = []
-    self.listener = threading.Thread(target=self.listen)
+    self.stopper = threading.Event()
+    self.listener = threading.Thread(target=self.listen, args=(self.stopper,))
+    self.screen.resize(1, curses.COLS)
 
   def __del__(self):
     self.stop()
 
   def start(self):
-    self.screen = curses.initscr()
     self.setup()
     self.listener.start()
 
   def stop(self):
-    self.listener.join()
-    self.listener.stop()
+    curses.nl()
     curses.echo()
     curses.nocbreak()
     curses.curs_set(1)
     curses.endwin()
 
-  def listen(self):
-    while True:
+  def listen(self, stopper):
+    while True and not stopper.is_set():
       c = self.screen.getch()
 
       if c == curses.KEY_UP:
@@ -71,34 +72,32 @@ class Terminal:
         if self.current_y < self.max_y-self.output_h: self.current_y += self.output_h
         if self.current_y > self.max_y-self.output_h: self.current_y = self.max_y-self.output_h
         self.refresh(False)
-      elif c == ord('q') or c == ord('Q') or c == KeyboardInterrupt:
+      elif c == ord('q') or c == ord('Q'):
         break
       time.sleep(0.01)
-    
-    raise KeyboardInterrupt
 
   def setup(self):
     curses.curs_set(0)
     curses.noecho()
     curses.cbreak()
+    curses.nl()
 
     self.screen.nodelay(1)
     self.screen.keypad(True)
 
     if curses.has_colors():
       curses.start_color()
-      curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLACK)
-      curses.init_pair(2, curses.COLOR_MAGENTA, curses.COLOR_BLACK)
-      curses.init_pair(3, curses.COLOR_BLUE, curses.COLOR_BLACK)
-      curses.init_pair(4, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+      curses.init_pair(1, curses.COLOR_BLUE, curses.COLOR_BLACK)
+      curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+      curses.init_pair(3, curses.COLOR_CYAN, curses.COLOR_BLACK)
+      curses.init_pair(4, curses.COLOR_MAGENTA, curses.COLOR_BLACK)
       curses.init_pair(5, curses.COLOR_GREEN, curses.COLOR_BLACK)
       curses.init_pair(6, curses.COLOR_RED, curses.COLOR_BLACK)
 
     self.colors = { '___0___': 0 }
     self.current_color = 1
-    self.output_h = curses.LINES-2
-    self.output_w = curses.newwin(curses.LINES-1, curses.COLS, 1, 0)
-    self.output_p = curses.newpad(curses.LINES-2, curses.COLS)
+    self.output_h = curses.LINES-1
+    self.output_p = curses.newpad(self.output_h, curses.COLS)
     self.output_p.idlok(1)
     self.refresh()
 
@@ -117,6 +116,7 @@ class Terminal:
           getattr(self, match.group(1).lower())(match.group(2))
         else:
           getattr(self, match.group(1).lower())()
+        self.refresh()
       else:
         components = self.color(action)
         for text, color in components:
@@ -124,31 +124,42 @@ class Terminal:
           if fcolor is not None: color = fcolor
 
           # Add the lines to the list, increment current "line" by 1
-          self.lines.insert(self.line, (text, color))
-          self.line += 1
+          self.max_y += text.count('\n')
+          self.output_p.resize(self.max_y, curses.COLS)
+          try:
+            self.output_p.addstr(text, curses.color_pair(color))
+            self.lines.insert(self.line, (text, color))
+            self.line += 1
+          except:
+            pass
 
           # If at the bottom of the window, keep scrolling with any new output
           if self.current_y == self.max_y-self.output_h: self.current_y += 1
 
-    self.refresh()
+        self.refresh(False)
 
   def refresh(self, redraw=True):
     if redraw:
       self.output_p.clear()
-      self.max_y = 0
+      self.max_y = 1
       for text, color in self.lines:
         if text:
           self.max_y += text.count('\n')
-          self.output_p.resize(self.max_y+1, curses.COLS)
+          self.output_p.resize(self.max_y, curses.COLS)
           try:
             self.output_p.addstr(text, curses.color_pair(color))
           except:
             pass
 
     self.screen.noutrefresh()
-    self.output_w.noutrefresh()
     self.output_p.noutrefresh(self.current_y, 0, 1, 0, self.output_h, curses.COLS)
     curses.doupdate()
+
+  def top(self):
+    self.current_y = 0
+
+  def bottom(self):
+    self.current_y = self.max_y-self.output_h
 
   def delete(self):
     self.lines[self.line] = ('\n', 0)

@@ -1,6 +1,5 @@
-from __future__ import print_function
-
 import os
+import io
 import sys
 from ruamel.yaml import YAML
 from string import Template
@@ -48,6 +47,9 @@ class Create:
           else:
             compose['services'][dependency]['depends_on'].append(service)
 
+      #if 'version' in srv:
+      #  ver = input('%s version to use (%s)' % (srv['version']))
+
       if 'volumes' in srv:
         if not 'volumes' in compose:
           compose['volumes'] = {}
@@ -57,7 +59,8 @@ class Create:
     yaml.preserve_quotes = True
     yaml.boolean_representation = ['False', 'True']
     yaml.indent(sequence=4, offset=2)
-    yaml.dump(compose, file('docker-compose.yml', 'w'))
+    with open('docker-compose.yml', 'w') as fp:
+      yaml.dump(compose, fp)
     print('Done')
 
   def write_dockerfile(self):
@@ -69,7 +72,7 @@ class Create:
 
   def write_environment(self):
     print('Writing .env ... ', end='')
-    template = Template(self.load_file('rock/templates/.env')).safe_substitute({ 'machine': self.machine(), 'project': self.project() })
+    template = Template(self.load_file('rock/templates/.env')).safe_substitute({ 'MACHINE': self.machine(), 'PROJECT': self.project() })
     environment = open('.env', 'w')
     with open('.env', 'w') as env:
       env.write(template)
@@ -84,7 +87,7 @@ class Create:
     if not 'machine_name' in globals():
       machine_name = args.machine
     if machine_name == None:
-      machine_name = raw_input('Machine Name: ')
+      machine_name = input('Machine Name: ')
     return machine_name
 
   def project(self):
@@ -92,5 +95,5 @@ class Create:
     if not 'project_name' in globals():
       project_name = args.project
     if project_name == None:
-      project_name = raw_input('Project Name: ')
+      project_name = input('Project Name: ')
     return project_name

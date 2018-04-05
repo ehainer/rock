@@ -1,6 +1,5 @@
-from __future__ import print_function
-
 import os
+import io
 import sys
 from ruamel.yaml import YAML
 from string import Template
@@ -25,7 +24,9 @@ class Add:
   def inject(self):
     print('Updating docker-compose.yml ... ', end='')
     yaml = YAML()
-    compose = yaml.load(file('docker-compose.yml'))
+
+    with open('docker-compose.yml', 'r') as dockercompose:
+      compose = yaml.load(dockercompose)
 
     for service in args.services:
       srv = yaml.load(self.load_file('rock/services/' + service + '.yml'))
@@ -49,7 +50,8 @@ class Add:
     yaml.preserve_quotes = True
     yaml.boolean_representation = ['False', 'True']
     yaml.indent(sequence=4, offset=2)
-    yaml.dump(compose, file('docker-compose.yml', 'w'))
+    with open('docker-compose.yml', 'w') as dockercompose:
+      yaml.dump(compose, dockercompose)
     print('Done')
 
   def load_file(self, path):

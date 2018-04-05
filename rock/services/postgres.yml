@@ -1,5 +1,8 @@
 dependency_of:
   - rails
+version:
+  ask: true
+  default: 10.3
 services:
   postgres:
     image: postgres:$POSTGRES_VERSION

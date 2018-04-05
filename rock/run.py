@@ -1,5 +1,6 @@
 from rock.lib.terminal import Terminal
 from rock.lib.machine import Machine
+from contextlib import suppress
 
 import io
 import os
@@ -8,62 +9,65 @@ import curses
 import asyncio
 import signal
 import codecs
+import subprocess
+
+import time
 
 class Run:
   def __init__(self):
+    self.docker_task = None
     self.docker_up = None
     self.docker_down = None
     self.machine = Machine()
-    self.terminal = Terminal()
-
-    self.terminal.start()
-
+    self.terminal = curses.wrapper(Terminal)
     self.loop = asyncio.get_event_loop()
+
     try:
+      self.terminal.start()
       self.loop.run_until_complete(self.start_machine())
-      self.loop.run_until_complete(self.configure())
-      self.loop.run_until_complete(self.start_docker())
-    #except asyncio.CancelledError:
-    #  pass
+      self.loop.create_task(self.start_docker())
+      self.loop.run_forever()
+    except Exception as ex:
+      print(ex)
+    except asyncio.CancelledError:
+      pass
     except KeyboardInterrupt:
-      for task in asyncio.Task.all_tasks():
-        task.cancel()
-      self.docker_up.send_signal(signal.SIGINT)
-      self.loop.stop()
+      self.terminal.write('\n^C Gracefully stopping docker. Press Ctrl+C again to kill\n')
+      self.terminal.bottom()
+      self.docker_up.terminate()
+      self.loop.run_until_complete(self.stop_docker())
+      self.terminal.stopper.set()
     finally:
-      #self.loop.run_until_complete(self.stop_docker())
       self.terminal.stop()
-    self.loop.close()
-    exit(0)
+      self.loop.stop()
+      self.loop.close()
 
   async def start_docker(self):
+    # , preexec_fn=os.setpgrp
+    self.docker_up = await asyncio.create_subprocess_shell('docker-compose up', stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=self.env())
     await asyncio.wait([
-      self.run()
-    ])
-
-  async def stop_docker(self):
-    self.docker_down = await asyncio.create_subprocess_shell('docker-compose down', stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-
-    await asyncio.wait([
-        self.read_stream(self.docker_down.stdout)
-    ])
-    return await self.docker_down.wait()
-
-  async def run(self):
-    self.docker_up = await asyncio.create_subprocess_shell('docker-compose up', stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, preexec_fn=os.setpgrp)
-
-    await asyncio.wait([
-        self.read_stream(self.docker_up.stdout)
+      self.output(self.docker_up.stdout)
     ])
     return await self.docker_up.wait()
 
-  async def read_stream(self, stream):
+  async def stop_docker(self):
+    self.docker_down = await asyncio.create_subprocess_shell('docker-compose down', stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=self.env(False))
+    await asyncio.wait([
+      self.output(self.docker_down.stdout)
+    ])
+    return await self.docker_down.wait()
+
+  async def output(self, stream):
+    empty = 0
     while True:
-      line = await stream.readline()
-      if line:
-        self.terminal.write(line)
+      try:
+        line = await asyncio.wait_for(stream.readline(), 0.1)
+      except asyncio.TimeoutError:
+        pass
       else:
-        break
+        if line == b'': empty += 1
+        if empty > 2000: break
+        self.terminal.write(line)
 
   async def start_machine(self):
     if not self.machine.running():
@@ -82,13 +86,6 @@ class Run:
       self.terminal.header('Running %s @ %s' % (self.machine.project(), self.machine.ip()))
       return True
 
-  async def configure(self):
-    for k, v in self.machine.config():
-      self.terminal.write('Set env ')
-      self.terminal.write(k, 4)
-      self.terminal.write(' ... %s\n' % v)
-    self.terminal.write('\n')
-
   def decode(self, text):
     def decode_match(match):
       return codecs.decode(match.group(0), 'unicode-escape')
@@ -98,3 +95,14 @@ class Run:
       return ESCAPE_SEQUENCE_RE.sub(decode_match, str(text, 'utf-8'))
     except:
       return str(text)
+
+  def env(self, output=True):
+    docker_env = os.environ.copy()
+    for k, v in self.machine.config():
+      docker_env[k] = v
+      if output:
+        self.terminal.write('Set env ')
+        self.terminal.write(k, 2)
+        self.terminal.write(' ... %s\n' % v)
+    if output: self.terminal.write('\n')
+    return docker_env

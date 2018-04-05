@@ -1,10 +1,10 @@
 from machine import Machine as Docker
-from dotenv import load_dotenv, dotenv_values
+from dotenv import dotenv_values
 
 import io
 import re
 
-DOCKER_ENVS = re.compile(r'(DOCKER_[A-Z_]+)=(.*)\n')
+DOCKER_ENVS = re.compile(r'(DOCKER_[A-Z_]+)="(.+?)"\n')
 
 class Machine:
   def __init__(self):
@@ -19,7 +19,7 @@ class Machine:
   def config(self):
     env = '\n'.join(Docker().env(self.name()))
     for match in DOCKER_ENVS.finditer(env):
-      yield match.group(1), match.group(2)
+      yield str(match.group(1)), str(match.group(2))
     return True
 
   def ip(self):
