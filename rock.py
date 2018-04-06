@@ -10,6 +10,10 @@ from rock.create import Create
 from rock.execute import Execute
 from rock.install import Install
 
+class RockError(Exception):
+  def __init__(self, *args, **kwargs):
+    Exception.__init__(self, *args, **kwargs)
+
 class Rock:
   def __init__(self):
     parser = argparse.ArgumentParser(
